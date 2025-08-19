@@ -1,0 +1,200 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <sys/epoll.h> // Для epoll
+#include <fcntl.h>     // Для fcntl
+#include <errno.h>
+#include <ctype.h>     // Для toupper
+
+#define PORT 8080
+#define MAX_EVENTS 10 // Максимальное количество событий, возвращаемых epoll_wait
+#define BUFFER_SIZE 1024
+
+// Функция для установки сокета в неблокирующий режим
+int set_nonblocking(int fd) {
+    int flags = fcntl(fd, F_GETFL, 0);
+    if (flags == -1) {
+        perror("fcntl F_GETFL");
+        return -1;
+    }
+    if (fcntl(fd, F_SETFL, flags | O_NONBLOCK) == -1) {
+        perror("fcntl F_SETFL");
+        return -1;
+    }
+    return 0;
+}
+
+int main() {
+    int listen_sock, conn_sock, epoll_fd;
+    struct sockaddr_in serv_addr, client_addr;
+    socklen_t client_len;
+    struct epoll_event ev, events[MAX_EVENTS];
+    int nfds, n;
+    char buffer[BUFFER_SIZE];
+
+    // 1. Создание TCP сокета
+    listen_sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (listen_sock < 0) {
+        perror("socket failed");
+        exit(EXIT_FAILURE);
+    }
+
+    // Позволяет повторно использовать адрес и порт
+    int opt = 1;
+    if (setsockopt(listen_sock, SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT, &opt, sizeof(opt))) {
+        perror("setsockopt");
+        close(listen_sock);
+        exit(EXIT_FAILURE);
+    }
+
+    // Настройка адреса сервера
+    serv_addr.sin_family = AF_INET;
+    serv_addr.sin_addr.s_addr = INADDR_ANY;
+    serv_addr.sin_port = htons(PORT);
+
+    // Привязка сокета к адресу
+    if (bind(listen_sock, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) {
+        perror("bind failed");
+        close(listen_sock);
+        exit(EXIT_FAILURE);
+    }
+
+    // Установка сокета в неблокирующий режим (очень рекомендуется для epoll ET)
+    // Даже для LT это хорошая практика
+    if (set_nonblocking(listen_sock) == -1) {
+         close(listen_sock);
+         exit(EXIT_FAILURE);
+    }
+
+    // Начало прослушивания
+    if (listen(listen_sock, 10) < 0) {
+        perror("listen");
+        close(listen_sock);
+        exit(EXIT_FAILURE);
+    }
+
+    printf("Эхо-сервер запущен на порту %d\n", PORT);
+
+    // 2. Создание экземпляра epoll
+    epoll_fd = epoll_create1(0); // 0 - флаги, обычно 0
+    if (epoll_fd == -1) {
+        perror("epoll_create1");
+        close(listen_sock);
+        exit(EXIT_FAILURE);
+    }
+
+    // 3. Добавление слушающего сокета в epoll interest-список
+    ev.events = EPOLLIN; // Интересуемся событием "готов к чтению"
+    ev.data.fd = listen_sock; // Связываем событие с дескриптором
+    if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, listen_sock, &ev) == -1) {
+        perror("epoll_ctl: listen_sock");
+        close(listen_sock);
+        close(epoll_fd);
+        exit(EXIT_FAILURE);
+    }
+
+    // 4. Цикл событий (Event Loop)
+    for (;;) {
+        // Ожидание событий
+        nfds = epoll_wait(epoll_fd, events, MAX_EVENTS, -1); // Блокируем навсегда (-1)
+        if (nfds == -1) {
+            perror("epoll_wait");
+            // Обработка ошибок (например, EINTR при сигнале)
+            if (errno == EINTR) continue; // Продолжить, если прерван сигналом
+            break;
+        }
+
+        // Обработка всех готовых событий
+        for (n = 0; n < nfds; n++) {
+            // Проверка на ошибки или обрыв связи
+            if ((events[n].events & EPOLLERR) || (events[n].events & EPOLLHUP) ||
+                (!(events[n].events & EPOLLIN))) {
+                fprintf(stderr, "epoll error on fd %d\n", events[n].data.fd);
+                close(events[n].data.fd);
+                continue;
+            }
+
+            // --- Событие на слушающем сокете (новое соединение) ---
+            if (events[n].data.fd == listen_sock) {
+                printf("Новое соединение...\n");
+                client_len = sizeof(client_addr);
+                conn_sock = accept(listen_sock, (struct sockaddr *)&client_addr, &client_len);
+                if (conn_sock == -1) {
+                    perror("accept");
+                    // Продолжаем цикл, даже если accept не удался
+                    continue;
+                }
+                printf("Подключен клиент: %s:%d\n", inet_ntoa(client_addr.sin_addr), ntohs(client_addr.sin_port));
+
+                // Установка клиентского сокета в неблокирующий режим
+                if (set_nonblocking(conn_sock) == -1) {
+                    close(conn_sock);
+                    continue;
+                }
+
+                // Добавление клиентского сокета в epoll
+                ev.events = EPOLLIN | EPOLLET; // Используем Edge Triggered для клиента
+                ev.data.fd = conn_sock;
+                if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, conn_sock, &ev) == -1) {
+                    perror("epoll_ctl: conn_sock");
+                    close(conn_sock);
+                }
+                // Примечание: В ET режиме важно прочитать ВСЕ данные сразу.
+                // Если не прочитать всё, epoll_wait не уведомит снова, пока не будет нового "ребра".
+
+            }
+            // --- Событие на клиентском сокете (данные для чтения) ---
+            else {
+                int done = 0;
+                while (1) { // Цикл для чтения всех данных в ET режиме
+                    ssize_t count = read(events[n].data.fd, buffer, sizeof(buffer));
+                    if (count == -1) {
+                        // Если ошибка EAGAIN или EWOULDBLOCK, значит данных больше нет (для неблокирующего сокета)
+                        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                            break; // Выходим из цикла чтения
+                        } else {
+                            perror("read");
+                            done = 1; // Ошибка, закрываем соединение
+                            break;
+                        }
+                    } else if (count == 0) {
+                        // EOF - клиент закрыл соединение
+                        done = 1;
+                        break;
+                    }
+
+                    // Обработка данных: преобразуем в верхний регистр и отправляем обратно
+                    for (int i = 0; i < count; i++) {
+                         buffer[i] = toupper(buffer[i]);
+                    }
+
+                    // Отправка данных обратно клиенту
+                    // Важно: write также может быть неполным, особенно в ET режиме.
+                    // Для простоты здесь предполагаем, что всё отправится за раз.
+                    // В реальном приложении нужно обрабатывать частичные записи.
+                    if (write(events[n].data.fd, buffer, count) == -1) {
+                         perror("write");
+                         done = 1;
+                         break;
+                    }
+                }
+
+                if (done) {
+                    printf("Клиент отключился\n");
+                    close(events[n].data.fd);
+                    // epoll автоматически удаляет закрытые дескрипторы, но можно явно:
+                    // epoll_ctl(epoll_fd, EPOLL_CTL_DEL, events[n].data.fd, NULL);
+                }
+            }
+        }
+    }
+
+    // Закрытие дескрипторов (в реальной программе нужно более аккуратное завершение)
+    close(listen_sock);
+    close(epoll_fd);
+    return EXIT_SUCCESS;
+}

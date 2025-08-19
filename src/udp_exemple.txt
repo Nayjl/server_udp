@@ -1,0 +1,172 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <sys/epoll.h> // Для epoll
+#include <fcntl.h>     // Для fcntl
+#include <errno.h>
+#include <ctype.h>     // Для toupper
+
+#define PORT 8080
+#define MAX_EVENTS 10 // Максимальное количество событий, возвращаемых epoll_wait
+#define BUFFER_SIZE 1024
+
+// Функция для установки сокета в неблокирующий режим
+int set_nonblocking(int fd) {
+    int flags = fcntl(fd, F_GETFL, 0);
+    if (flags == -1) {
+        perror("fcntl F_GETFL");
+        return -1;
+    }
+    if (fcntl(fd, F_SETFL, flags | O_NONBLOCK) == -1) {
+        perror("fcntl F_SETFL");
+        return -1;
+    }
+    return 0;
+}
+
+int main() {
+    int udp_sock, epoll_fd;
+    struct sockaddr_in serv_addr, client_addr;
+    socklen_t client_len;
+    struct epoll_event ev, events[MAX_EVENTS];
+    int nfds, n;
+    char buffer[BUFFER_SIZE];
+    ssize_t bytes_received;
+
+    // 1. Создание UDP сокета (SOCK_DGRAM)
+    udp_sock = socket(AF_INET, SOCK_DGRAM, 0); // SOCK_DGRAM для UDP
+    if (udp_sock < 0) {
+        perror("socket failed");
+        exit(EXIT_FAILURE);
+    }
+
+    // Позволяет повторно использовать адрес и порт
+    int opt = 1;
+    if (setsockopt(udp_sock, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt))) {
+        perror("setsockopt SO_REUSEADDR");
+        // SO_REUSEPORT может не поддерживаться или не быть нужным для UDP
+        // perror("setsockopt");
+        close(udp_sock);
+        exit(EXIT_FAILURE);
+    }
+
+    // Настройка адреса сервера
+    memset(&serv_addr, 0, sizeof(serv_addr)); // Рекомендуется обнулять
+    serv_addr.sin_family = AF_INET;
+    serv_addr.sin_addr.s_addr = INADDR_ANY;
+    serv_addr.sin_port = htons(PORT);
+
+    // Привязка сокета к адресу (bind)
+    if (bind(udp_sock, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) {
+        perror("bind failed");
+        close(udp_sock);
+        exit(EXIT_FAILURE);
+    }
+
+    // Установка сокета в неблокирующий режим
+    if (set_nonblocking(udp_sock) == -1) {
+         close(udp_sock);
+         exit(EXIT_FAILURE);
+    }
+
+    printf("UDP Эхо-сервер запущен на порту %d\n", PORT);
+
+    // 2. Создание экземпляра epoll
+    epoll_fd = epoll_create1(0);
+    if (epoll_fd == -1) {
+        perror("epoll_create1");
+        close(udp_sock);
+        exit(EXIT_FAILURE);
+    }
+
+    // 3. Добавление UDP сокета в epoll interest-список
+    // Важно: добавляем ТОЛЬКО один UDP сокет
+    ev.events = EPOLLIN; // Интересуемся событием "готов к чтению"
+    ev.data.fd = udp_sock; // Связываем событие с дескриптором
+    if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, udp_sock, &ev) == -1) {
+        perror("epoll_ctl: udp_sock");
+        close(udp_sock);
+        close(epoll_fd);
+        exit(EXIT_FAILURE);
+    }
+
+    // 4. Цикл событий (Event Loop)
+    for (;;) {
+        // Ожидание событий
+        nfds = epoll_wait(epoll_fd, events, MAX_EVENTS, -1); // Блокируем навсегда (-1)
+        if (nfds == -1) {
+            perror("epoll_wait");
+            if (errno == EINTR) continue; // Продолжить, если прерван сигналом
+            break;
+        }
+
+        // Обработка всех готовых событий
+        for (n = 0; n < nfds; n++) {
+            // Проверка на ошибки или обрыв связи
+            if ((events[n].events & EPOLLERR) || (events[n].events & EPOLLHUP) ||
+                (!(events[n].events & EPOLLIN))) {
+                fprintf(stderr, "epoll error on fd %d\n", events[n].data.fd);
+                // Для UDP это критично, так как у нас только один сокет
+                close(events[n].data.fd);
+                goto cleanup; // Или break внешнего цикла
+            }
+
+            // --- Событие на UDP сокете (пришла дейтаграмма) ---
+            if (events[n].data.fd == udp_sock) {
+                // printf("Получено событие на UDP сокете\n"); // Может быть много
+
+                // Цикл для чтения всех доступных дейтаграмм
+                // Особенно важно в Level Triggered (LT) режиме, если их много
+                while (1) {
+                    client_len = sizeof(client_addr);
+                    // recvfrom: получает дейтаграмму и адрес отправителя
+                    bytes_received = recvfrom(udp_sock, buffer, BUFFER_SIZE - 1, 0,
+                                              (struct sockaddr*)&client_addr, &client_len);
+
+                    if (bytes_received == -1) {
+                        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                            // Нет больше данных для чтения в данный момент
+                            break; // Выходим из цикла чтения дейтаграмм
+                        } else {
+                            perror("recvfrom");
+                            // Критическая ошибка на сокете
+                            goto cleanup;
+                        }
+                    }
+
+                    // Обработка полученной дейтаграммы
+                    printf("Получено %zd байт от %s:%d\n",
+                           bytes_received, inet_ntoa(client_addr.sin_addr), ntohs(client_addr.sin_port));
+                    buffer[bytes_received] = '\0'; // Для безопасного вывода как строки
+                    printf("  Данные: %s\n", buffer);
+
+                    // Эхо: преобразуем в верхний регистр и отправляем обратно
+                    for (int i = 0; i < bytes_received; i++) {
+                         buffer[i] = toupper((unsigned char)buffer[i]); // toupper требует unsigned char
+                    }
+
+                    // sendto: отправляет дейтаграмму обратно отправителю
+                    if (sendto(udp_sock, buffer, bytes_received, 0,
+                               (struct sockaddr*)&client_addr, client_len) == -1) {
+                        perror("sendto");
+                        // Не критично для сервера в целом, продолжаем
+                    } else {
+                        printf("Отправлено %zd байт обратно клиенту %s:%d\n",
+                               bytes_received, inet_ntoa(client_addr.sin_addr), ntohs(client_addr.sin_port));
+                    }
+                } // while(1) для чтения дейтаграмм
+            }
+            // В UDP-сервере других дескрипторов для epoll обычно нет
+        }
+    }
+
+cleanup:
+    printf("Завершение работы сервера...\n");
+    close(udp_sock);
+    close(epoll_fd);
+    return EXIT_SUCCESS;
+}

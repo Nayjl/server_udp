@@ -1,0 +1,7 @@
+
+*.elf
+*.mod
+*.ko
+*.symvers
+
+build/*
