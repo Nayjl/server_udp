@@ -31,8 +31,8 @@ void signal_handler(int sig_num);
 
 #pragma pack(push, 1)
 struct protocol_command_udp {
-    uint8_t command;
     size_t quantity_byte;
+    uint8_t command;
     uint32_t data_client;
 };
 
@@ -100,41 +100,44 @@ int main(int argc, char **argv) {
 
     int nfds, n;
 
-    printf("Create socket\n");
+    
     udp_sock = udp_create_socket();
+    printf("Successfully: Create socket\n");
 
-    printf("Set ip addr server\n");
     udp_setup_ip_addr_serv(&serv_addr, PORT);
+    printf("Successfully: Set ip addr server\n");
 
-    printf("bind socket to ip addr\n");
     udp_bind(udp_sock, &serv_addr);
+    printf("Successfully: bind socket to ip addr\n");
 
-    printf("Set non blocking socket\n");
+    
     status_sock = set_nonblocking(udp_sock);
     // Установка сокета в неблокирующий режим
     if (status_sock == -1) {
          close(udp_sock);
          exit(EXIT_FAILURE);
+    } else {
+        printf("Successfully: Set non blocking socket\n");
     }
-    printf("UDP сервер запущен на порту %d\n", PORT);
+    printf("Successfully: UDP сервер запущен на порту %d\n", PORT);
 
-    printf("Create epoll\n");
+    printf("Successfully: Create epoll\n");
     epoll_fd = create_epol();
 
-    printf("Add table interes socket\n");
+    printf("Successfully: Add table interes socket\n");
     control_interes_epoll(ev, epoll_fd, udp_sock, EPOLLIN);
 
 
     //-----------------------------------------------------------------------------------------------------------------
-    fd_mem = open(DEVMEM, O_RDWR | O_SYNC);
-    fd_cma = open(CMA_DMA_PL, O_RDWR | O_SYNC);
+    // fd_mem = open(DEVMEM, O_RDWR | O_SYNC);
+    // fd_cma = open(CMA_DMA_PL, O_RDWR | O_SYNC);
 
 
     
-    cma_dma.calculate_size_byte_ptr(&cma_dma);
-    DMAmemory_alloc(fd_cma, &(cma_dma.size_ddr));
-    DMAmemory_get_phys_addr(fd_cma, &phys_addr_cma_ddr);
-    cma_ddr = (uint32_t*)maping(fd_cma, phys_addr_cma_ddr, cma_dma.size_ddr);
+    // cma_dma.calculate_size_byte_ptr(&cma_dma);
+    // DMAmemory_alloc(fd_cma, &(cma_dma.size_ddr));
+    // DMAmemory_get_phys_addr(fd_cma, &phys_addr_cma_ddr);
+    // cma_ddr = (uint32_t*)maping(fd_cma, phys_addr_cma_ddr, cma_dma.size_ddr);
 
 
 
@@ -145,6 +148,7 @@ int main(int argc, char **argv) {
             if (errno == EINTR) continue;
             break;
         }
+
 
         for (n = 0; n < nfds; n++) {
             if ((events_find[n].events & EPOLLERR) || (events_find[n].events & EPOLLHUP) || (!(events_find[n].events & EPOLLIN))) { // Проверка на ошибки или обрыв связи
@@ -165,21 +169,24 @@ int main(int argc, char **argv) {
                             goto cleanup;
                         }
                     }
-
+                    printf("Successfully: Resicivier data UDP number byte packets = %lu\n", proto_upd.quantity_byte);
+                    printf("Resicivier data UDP command = %d\n", proto_upd.command);
+                    printf("Resicivier data UDP data = %d\n", proto_upd.data_client);
                     switch (proto_upd.command) {
                     case 0x0: {
                             current_address_read = 0;
-                            calculating_address(proto_upd.quantity_byte);
+                            calculating_address(proto_upd.data_client);
                             if (begin_addr < current_address_read) {
                                 remains = current_address_read - begin_addr;
 
                                 proto_upd.command = 0x0;
-                                proto_upd.quantity_byte = sizeof(uint32_t) * remains;
+                                proto_upd.data_client = sizeof(uint32_t) * remains;
+                                proto_upd.quantity_byte = proto_upd.data_client + sizeof(proto_upd);
                                 status_sock = sendto(udp_sock, (struct protocol_command_udp*)&proto_upd, sizeof(proto_upd), 0, (struct sockaddr*)&client_addr, client_len);
                                 if (status_sock == -1) {
                                     perror("sendto");
                                 }
-                                status_sock = sendto(udp_sock, (uint32_t*)(cma_ddr + begin_addr), proto_upd.quantity_byte, 0, (struct sockaddr*)&client_addr, client_len);
+                                status_sock = sendto(udp_sock, (uint32_t*)(cma_ddr + begin_addr), proto_upd.data_client, 0, (struct sockaddr*)&client_addr, client_len);
                                 if (status_sock == -1) {
                                     perror("sendto");
                                 }
@@ -187,22 +194,24 @@ int main(int argc, char **argv) {
                                 remains = cma_dma.last_number_word - begin_addr;
 
                                 proto_upd.command = 0x0;
-                                proto_upd.quantity_byte = sizeof(uint32_t) * remains;
+                                proto_upd.data_client = sizeof(uint32_t) * remains;
+                                proto_upd.quantity_byte = proto_upd.data_client + sizeof(proto_upd);
                                 status_sock = sendto(udp_sock, (struct protocol_command_udp*)&proto_upd, sizeof(proto_upd), 0, (struct sockaddr*)&client_addr, client_len);
                                 if (status_sock == -1) {
                                     perror("sendto");
                                 }
-                                status_sock = sendto(udp_sock, (uint32_t*)(cma_ddr + begin_addr), proto_upd.quantity_byte, 0, (struct sockaddr*)&client_addr, client_len);
+                                status_sock = sendto(udp_sock, (uint32_t*)(cma_ddr + begin_addr), proto_upd.data_client, 0, (struct sockaddr*)&client_addr, client_len);
                                 if (status_sock == -1) {
                                     perror("sendto");
                                 }
                                 
-                                proto_upd.quantity_byte = sizeof(uint32_t) * current_address_read;
+                                proto_upd.data_client = sizeof(uint32_t) * remains;
+                                proto_upd.quantity_byte = proto_upd.data_client + sizeof(proto_upd);
                                 status_sock = sendto(udp_sock, (struct protocol_command_udp*)&proto_upd, sizeof(proto_upd), 0, (struct sockaddr*)&client_addr, client_len);
                                 if (status_sock == -1) {
                                     perror("sendto");
                                 }
-                                status_sock = sendto(udp_sock, (uint32_t*)cma_ddr, proto_upd.quantity_byte, 0, (struct sockaddr*)&client_addr, client_len);
+                                status_sock = sendto(udp_sock, (uint32_t*)cma_ddr, proto_upd.data_client, 0, (struct sockaddr*)&client_addr, client_len);
                                 if (status_sock == -1) {
                                     perror("sendto");
                                 }
@@ -224,11 +233,11 @@ cleanup:
     close(udp_sock);
     close(epoll_fd);
 
-    DMAmemory_free(fd_cma);
-    munmap(cma_ddr, cma_dma.size_ddr);
+    // DMAmemory_free(fd_cma);
+    // munmap(cma_ddr, cma_dma.size_ddr);
 
-    close(fd_mem);
-    close(fd_cma);
+    // close(fd_mem);
+    // close(fd_cma);
     return EXIT_SUCCESS;
 }
 
@@ -251,10 +260,10 @@ void signal_handler(int sig_num) {
     close(udp_sock);
     close(epoll_fd);
 
-    DMAmemory_free(fd_cma);
-    munmap(cma_ddr, cma_dma.size_ddr);
+    // DMAmemory_free(fd_cma);
+    // munmap(cma_ddr, cma_dma.size_ddr);
 
-    close(fd_mem);
-    close(fd_cma);
+    // close(fd_mem);
+    // close(fd_cma);
     exit(EXIT_SUCCESS); // Завершаем программу корректно
 }
