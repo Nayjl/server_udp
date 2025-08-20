@@ -39,7 +39,7 @@ struct protocol_command_udp {
 #pragma pack(pop)
 
 struct config_cma cma_dma = {.speed_sample = 500000, .sizeshot = 1, .number_chennal = 4, .calculate_size_byte_ptr = calculate_size_byte};
-uint32_t *cma_ddr;
+uint32_t cma_ddr[1024];
 unsigned long phys_addr_cma_ddr;
 
 uint32_t number_word;
@@ -119,7 +119,7 @@ int main(int argc, char **argv) {
     } else {
         printf("Successfully: Set non blocking socket\n");
     }
-    printf("Successfully: UDP сервер запущен на порту %d\n", PORT);
+    
 
     printf("Successfully: Create epoll\n");
     epoll_fd = create_epol();
@@ -129,6 +129,10 @@ int main(int argc, char **argv) {
 
 
     //-----------------------------------------------------------------------------------------------------------------
+    cma_dma.calculate_size_byte_ptr(&cma_dma);
+    cma_dma.last_number_word = 1024;
+
+
     // fd_mem = open(DEVMEM, O_RDWR | O_SYNC);
     // fd_cma = open(CMA_DMA_PL, O_RDWR | O_SYNC);
 
@@ -138,9 +142,21 @@ int main(int argc, char **argv) {
     // DMAmemory_alloc(fd_cma, &(cma_dma.size_ddr));
     // DMAmemory_get_phys_addr(fd_cma, &phys_addr_cma_ddr);
     // cma_ddr = (uint32_t*)maping(fd_cma, phys_addr_cma_ddr, cma_dma.size_ddr);
+    int j = 0;
+    for (int i = 0; i < 1024; i++) {
+        if (j == 51) {
+            j = -50;
+            cma_ddr[i] = j;
+        } else {
+            cma_ddr[i] = j;
+        }
+        j += 1;
+        // printf("cma_ddr[%d] = %d\n", i, cma_ddr[i]);
+    }
+    
 
 
-
+    printf("Successfully: UDP сервер запущен на порту %d\n", PORT);
     for (;;) {
         nfds = epoll_wait(epoll_fd, events_find, MAX_EVENTS, -1); // Блокируем навсегда (-1)
         if (nfds == -1) {
