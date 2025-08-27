@@ -20,7 +20,7 @@ int set_nonblocking(int fd);
 
 int create_epol();
 
-void control_interes_epoll(struct epoll_event ev, int epoll_fds, int interes_sock, uint32_t interes_event);
+void control_interes_epoll(struct epoll_event *ev, int epoll_fds, int interes_sock, uint32_t interes_event);
 
 
 #endif

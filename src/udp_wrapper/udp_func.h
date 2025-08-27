@@ -12,7 +12,10 @@
 #include <string.h>
 #include <errno.h>
 
-
+#define TEORIC_MAX_BYTE_SEND_UDP 65507
+#define STANDART_SEND_BYTE_SOCKET 1472
+#define REAL_SEND_BYTE_SOCKET 1400
+#define NUMBER_SEND_WORD32_SOCKET (REAL_SEND_BYTE_SOCKET / 4)
 
 int udp_create_socket(void);
 

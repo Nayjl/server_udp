@@ -13,6 +13,7 @@
         "initializer_list": "c",
         "ioctl.h": "c",
         "config_fpga.h": "c",
-        "stdint.h": "c"
+        "stdint.h": "c",
+        "errno.h": "c"
     }
 }
