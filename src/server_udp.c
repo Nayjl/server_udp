@@ -123,7 +123,7 @@ int main(int argc, char **argv) {
     // char bufer_udp_rec[16];
     printf("Successfully: UDP сервер запущен на порту %d\n", PORT);
     for (;;) {
-        nfds = epoll_wait(epoll_fd, events_find, MAX_EVENTS, 100); // Блокируем навсегда (-1)
+        nfds = epoll_wait(epoll_fd, events_find, MAX_EVENTS, 10); // Блокируем навсегда (-1)
         if (nfds == -1) {
             perror("epoll_wait");
             if (errno == EINTR) continue;
@@ -148,7 +148,8 @@ int main(int argc, char **argv) {
                             goto cleanup;
                         }
                     }
-                    printf("Принятые данные: %d\n", blockepollwait);
+                    printf("Принятые данные: 0x%x\n", blockepollwait);
+                    blockepollwait = 0;
                 }
             }
         }
@@ -182,6 +183,13 @@ int main(int argc, char **argv) {
             }
             save_addr = curent_addr;
         }
+    //     for (int i = 0; i < MAX_WORD_PILA; i++) {
+    //     if (val_pila == 50) {
+    //         val_pila = -50;
+    //     }
+    //     pila[i] = val_pila + (rand() % 50);
+    //     val_pila += 1;
+    // }
     }
 
 cleanup:

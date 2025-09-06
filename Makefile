@@ -3,7 +3,7 @@ BUILD_DIR = build
 TARGET ?= $(notdir $(abspath .)).elf
 
 # Флаги компилятора
-CC = gcc
+CC = arm-linux-gnueabihf-gcc
 CFLAGS += -I$(SRC_DIR) -Wall -Wextra -g -MMD -MP
 LIBS = #-lm
 
@@ -16,7 +16,7 @@ DEPS := $(patsubst $(SRC_DIR)/%.c, $(BUILD_DIR)/%.d, $(SOURCES))
 
 
 DEBUG_USER ?= root
-DEBUG_IP ?= 192.168.1.33
+DEBUG_IP ?= 192.168.1.37
 DEBUG_PORT ?= 2345
 DEBUG_PATH ?= /mnt/data
 
@@ -58,9 +58,14 @@ run_file_device: copy_file_device
 	@echo "Запуск файла на целевую плату..."
 	ssh $(DEBUG_USER)@$(DEBUG_IP) "$(DEBUG_PATH)/$(TARGET)"
 
-copy_file_device: $(TARGET)
+copy_file_device: del_file_device $(TARGET)
 	@echo "Копирование файла на целевую плату..."
 	scp $(TARGET) $(DEBUG_USER)@$(DEBUG_IP):$(DEBUG_PATH)/$(TARGET)
+
+
+del_file_device: $(TARGET)
+	@echo "Запуск файла на целевую плату..."
+	ssh $(DEBUG_USER)@$(DEBUG_IP) "rm -fv $(DEBUG_PATH)/$(TARGET)"
 	
 
 # Запуск отладчика GDB для локальной отладки (если вы используете QEMU)
